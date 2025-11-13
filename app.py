@@ -7,15 +7,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import warnings
 import io
-import base64
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
-import tempfile
-import os
-from PIL import Image
-import plotly.io as pio
 warnings.filterwarnings('ignore')
 
 # 设置页面配置
@@ -230,7 +225,7 @@ def plot_accessibility_boxplot(results_df):
     return fig
 
 def plot_accessibility_vs_demand(results_df):
-    """绘制可达性vs需求散点图 - 完全移除statsmodels依赖"""
+    """绘制可达性vs需求散点图 - 简化版本"""
     fig = px.scatter(
         results_df, x='Demand', y='AccessibilityScore',
         title='需求量与可达性关系',
@@ -238,9 +233,8 @@ def plot_accessibility_vs_demand(results_df):
         color_continuous_scale='viridis'
     )
     
-    # 手动添加简单的趋势线（不使用statsmodels）
+    # 使用numpy计算线性回归
     if len(results_df) > 1:
-        # 使用numpy计算线性回归
         x = results_df['Demand'].values
         y = results_df['AccessibilityScore'].values
         
@@ -263,42 +257,30 @@ def plot_accessibility_vs_demand(results_df):
     )
     return fig
 
-def plot_accessibility_heatmap(results_df):
-    """绘制可达性热力图（替代TOP10排名）"""
-    # 创建需求点-可达性得分的分布热力图
-    fig = px.density_heatmap(
-        results_df, x='Demand', y='AccessibilityScore',
-        title='需求量与可达性关系热力图',
-        nbinsx=20, nbinsy=20,
-        color_continuous_scale='viridis'
-    )
-    fig.update_layout(
-        xaxis_title='需求量', yaxis_title='可达性得分', height=400,
-        template="plotly_white"
-    )
-    return fig
-
-def plot_accessibility_ranking(results_df):
-    """绘制可达性排名图 - 替代TOP10柱状图"""
-    # 选择前15个点进行展示，避免图表过于拥挤
-    display_count = min(15, len(results_df))
-    top_results = results_df.nlargest(display_count, 'AccessibilityScore')
+def plot_cumulative_distribution(results_df):
+    """绘制累积分布函数 - 总体可视化"""
+    sorted_scores = np.sort(results_df['AccessibilityScore'])
+    cumulative_prob = np.arange(1, len(sorted_scores)+1) / len(sorted_scores)
     
-    fig = px.scatter(
-        top_results, x='DemandID', y='AccessibilityScore',
-        size='Demand', color='AccessibilityScore',
-        title=f'前{display_count}名可达性得分排名',
-        hover_data=['Demand'],
-        color_continuous_scale='viridis'
-    )
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=sorted_scores, y=cumulative_prob,
+        mode='lines', name='累积分布',
+        line=dict(color='purple', width=3)
+    ))
+    
     fig.update_layout(
-        xaxis_title='需求点ID', yaxis_title='可达性得分', height=400,
+        title='可达性得分累积分布函数',
+        xaxis_title='可达性得分',
+        yaxis_title='累积概率',
+        height=400,
         template="plotly_white"
     )
+    
     return fig
 
 def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cost_type, cost_unit, l0_distance):
-    """创建Word格式分析报告 - 简化版本，不依赖外部图表"""
+    """创建Word格式分析报告"""
     doc = Document()
     
     # 设置文档样式
@@ -437,24 +419,8 @@ def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cos
         supply_table.cell(i, 0).text = str(supply_id)
         supply_table.cell(i, 1).text = f"{ratio:.6f}"
     
-    # 权重计算示例
-    doc.add_heading('3.4 权重计算示例', level=2)
-    weight_table = doc.add_table(rows=6, cols=3)
-    weight_table.style = 'Light Grid'
-    weight_table.cell(0, 0).text = f'{cost_type}({cost_unit})'
-    weight_table.cell(0, 1).text = 'l_rn/l_0'
-    weight_table.cell(0, 2).text = '权重'
-    
-    test_distances = [0, l0_distance*0.25, l0_distance*0.5, l0_distance*0.75, l0_distance]
-    for i, dist in enumerate(test_distances, 1):
-        weight = analyzer.gaussian_weight(dist)
-        ratio = dist / l0_distance if l0_distance > 0 else 0
-        weight_table.cell(i, 0).text = f"{dist:.2f}"
-        weight_table.cell(i, 1).text = f"{ratio:.2f}"
-        weight_table.cell(i, 2).text = f"{weight:.4f}"
-    
     # 分析结论
-    doc.add_heading('3.5 分析结论与建议', level=2)
+    doc.add_heading('3.4 分析结论与建议', level=2)
     zero_count = (results_df['AccessibilityScore'] == 0).sum()
     conclusion = f"""
 本次空间可达性分析基于标准化高斯2SFCA方法，使用截止距离{l0_distance}{cost_unit}。
@@ -684,16 +650,15 @@ def main():
                 analyzer = NormalizedGaussian2SFCA(l0_distance, cost_type)
                 results_df, df_with_weights, supply_ratios = analyzer.calculate_accessibility(df)
                 
-                # 生成图表 - 完全不使用statsmodels
+                # 生成稳定的图表 - 只使用基本图表
                 fig_decay = plot_gaussian_decay(l0_distance, cost_type)
                 fig_dist = plot_accessibility_distribution(results_df)
                 fig_od = plot_od_connections(df_with_weights, cost_type)
                 fig_box = plot_accessibility_boxplot(results_df)
                 fig_scatter = plot_accessibility_vs_demand(results_df)
-                fig_heatmap = plot_accessibility_heatmap(results_df)
-                fig_ranking = plot_accessibility_ranking(results_df)
+                fig_cumulative = plot_cumulative_distribution(results_df)
                 
-                # 将结果存储在session state中，防止重新运行后消失
+                # 将结果存储在session state中
                 st.session_state.results_df = results_df
                 st.session_state.df_with_weights = df_with_weights
                 st.session_state.supply_ratios = supply_ratios
@@ -703,8 +668,7 @@ def main():
                 st.session_state.fig_od = fig_od
                 st.session_state.fig_box = fig_box
                 st.session_state.fig_scatter = fig_scatter
-                st.session_state.fig_heatmap = fig_heatmap
-                st.session_state.fig_ranking = fig_ranking
+                st.session_state.fig_cumulative = fig_cumulative
                 st.session_state.analysis_complete = True
                 st.session_state.cost_type = cost_type
                 st.session_state.cost_unit = cost_unit
@@ -733,8 +697,7 @@ def main():
         fig_od = st.session_state.fig_od
         fig_box = st.session_state.fig_box
         fig_scatter = st.session_state.fig_scatter
-        fig_heatmap = st.session_state.fig_heatmap
-        fig_ranking = st.session_state.fig_ranking
+        fig_cumulative = st.session_state.fig_cumulative
         cost_type = st.session_state.cost_type
         cost_unit = st.session_state.cost_unit
         l0_distance = st.session_state.l0_distance
@@ -774,185 +737,41 @@ def main():
             ])
             st.dataframe(supply_df, use_container_width=True)
         
-        # 可视化分析
-        st.markdown('<div class="section-header">📊 可视化分析</div>', unsafe_allow_html=True)
+        # 可视化分析 - 总体可视化
+        st.markdown('<div class="section-header">📊 总体可视化分析</div>', unsafe_allow_html=True)
         
         # 第一行图表
         col1, col2 = st.columns(2)
         
         with col1:
             st.plotly_chart(fig_decay, use_container_width=True)
-            
-            # 图表下载按钮
-            col1a, col1b = st.columns(2)
-            with col1a:
-                png_decay = pio.to_image(fig_decay, format='png', scale=2)
-                st.download_button(
-                    label="📥 下载PNG",
-                    data=png_decay,
-                    file_name="高斯衰减函数.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            with col1b:
-                pdf_decay = pio.to_image(fig_decay, format='pdf')
-                st.download_button(
-                    label="📥 下载PDF",
-                    data=pdf_decay,
-                    file_name="高斯衰减函数.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+            st.markdown("**图1: 标准化高斯衰减函数** - 展示权重随距离增加而衰减的模式")
         
         with col2:
             st.plotly_chart(fig_dist, use_container_width=True)
-            
-            # 图表下载按钮
-            col2a, col2b = st.columns(2)
-            with col2a:
-                png_dist = pio.to_image(fig_dist, format='png', scale=2)
-                st.download_button(
-                    label="📥 下载PNG",
-                    data=png_dist,
-                    file_name="可达性分布直方图.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            with col2b:
-                pdf_dist = pio.to_image(fig_dist, format='pdf')
-                st.download_button(
-                    label="📥 下载PDF",
-                    data=pdf_dist,
-                    file_name="可达性分布直方图.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+            st.markdown("**图2: 可达性得分分布** - 显示所有需求点的可达性得分频率分布")
         
         # 第二行图表
         col1, col2 = st.columns(2)
         
         with col1:
             st.plotly_chart(fig_od, use_container_width=True)
-            
-            # 图表下载按钮
-            col1a, col1b = st.columns(2)
-            with col1a:
-                png_od = pio.to_image(fig_od, format='png', scale=2)
-                st.download_button(
-                    label="📥 下载PNG",
-                    data=png_od,
-                    file_name="OD连接权重分布.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            with col1b:
-                pdf_od = pio.to_image(fig_od, format='pdf')
-                st.download_button(
-                    label="📥 下载PDF",
-                    data=pdf_od,
-                    file_name="OD连接权重分布.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+            st.markdown("**图3: OD连接权重分布** - 展示出行成本与用户公式权重的关系")
         
         with col2:
             st.plotly_chart(fig_box, use_container_width=True)
-            
-            # 图表下载按钮
-            col2a, col2b = st.columns(2)
-            with col2a:
-                png_box = pio.to_image(fig_box, format='png', scale=2)
-                st.download_button(
-                    label="📥 下载PNG",
-                    data=png_box,
-                    file_name="可达性箱线图.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            with col2b:
-                pdf_box = pio.to_image(fig_box, format='pdf')
-                st.download_button(
-                    label="📥 下载PDF",
-                    data=pdf_box,
-                    file_name="可达性箱线图.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+            st.markdown("**图4: 可达性得分箱线图** - 显示可达性得分的统计分布特征")
         
         # 第三行图表
         col1, col2 = st.columns(2)
         
         with col1:
             st.plotly_chart(fig_scatter, use_container_width=True)
-            
-            # 图表下载按钮
-            col1a, col1b = st.columns(2)
-            with col1a:
-                png_scatter = pio.to_image(fig_scatter, format='png', scale=2)
-                st.download_button(
-                    label="📥 下载PNG",
-                    data=png_scatter,
-                    file_name="需求量与可达性关系.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            with col1b:
-                pdf_scatter = pio.to_image(fig_scatter, format='pdf')
-                st.download_button(
-                    label="📥 下载PDF",
-                    data=pdf_scatter,
-                    file_name="需求量与可达性关系.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+            st.markdown("**图5: 需求量与可达性关系** - 分析需求量与可达性得分的相关性")
         
         with col2:
-            st.plotly_chart(fig_heatmap, use_container_width=True)
-            
-            # 图表下载按钮
-            col2a, col2b = st.columns(2)
-            with col2a:
-                png_heatmap = pio.to_image(fig_heatmap, format='png', scale=2)
-                st.download_button(
-                    label="📥 下载PNG",
-                    data=png_heatmap,
-                    file_name="需求量与可达性热力图.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            with col2b:
-                pdf_heatmap = pio.to_image(fig_heatmap, format='pdf')
-                st.download_button(
-                    label="📥 下载PDF",
-                    data=pdf_heatmap,
-                    file_name="需求量与可达性热力图.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-        
-        # 第四行图表 - 排名图
-        st.plotly_chart(fig_ranking, use_container_width=True)
-        
-        # 图表下载按钮
-        col4a, col4b = st.columns(2)
-        with col4a:
-            png_ranking = pio.to_image(fig_ranking, format='png', scale=2)
-            st.download_button(
-                label="📥 下载PNG",
-                data=png_ranking,
-                file_name="可达性排名图.png",
-                mime="image/png",
-                use_container_width=True
-            )
-        with col4b:
-            pdf_ranking = pio.to_image(fig_ranking, format='pdf')
-            st.download_button(
-                label="📥 下载PDF",
-                data=pdf_ranking,
-                file_name="可达性排名图.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            st.plotly_chart(fig_cumulative, use_container_width=True)
+            st.markdown("**图6: 可达性累积分布** - 展示可达性得分的累积分布函数")
         
         # 技术细节
         with st.expander("🔬 技术细节", expanded=False):
@@ -1049,7 +868,7 @@ def main():
         4. **查看结果**：分析结果包括：
            - 可达性得分表格和排名
            - 统计摘要
-           - 多种可视化图表（支持PNG/PDF下载）
+           - 多种可视化图表（总体分布）
            - 可下载的结果文件和完整分析报告
         
         ### 📏 参数设定建议
