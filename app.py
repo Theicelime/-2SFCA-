@@ -6,6 +6,12 @@ from collections import defaultdict
 import plotly.express as px
 import plotly.graph_objects as go
 import warnings
+import io
+import base64
+from docx import Document
+from docx.shared import Inches
+import tempfile
+import os
 warnings.filterwarnings('ignore')
 
 # 设置页面配置
@@ -52,6 +58,14 @@ st.markdown("""
         border-radius: 5px;
         padding: 1rem;
         margin: 1rem 0;
+    }
+    .formula-box {
+        background-color: #f8f9fa;
+        border: 2px solid #dee2e6;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        font-family: 'Courier New', monospace;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -193,6 +207,156 @@ def plot_od_connections(df_with_weights, cost_type):
     )
     return fig
 
+def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cost_type, cost_unit, l0_distance):
+    """创建Word格式分析报告"""
+    doc = Document()
+    
+    # 标题
+    title = doc.add_heading('标准化高斯2SFCA可达性分析报告', 0)
+    title.alignment = 1
+    
+    # 分析信息
+    doc.add_heading('分析基本信息', level=1)
+    info_table = doc.add_table(rows=4, cols=2)
+    info_table.style = 'Light Grid'
+    info_table.cell(0, 0).text = '分析时间'
+    info_table.cell(0, 1).text = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+    info_table.cell(1, 0).text = '成本类型'
+    info_table.cell(1, 1).text = cost_type
+    info_table.cell(2, 0).text = '截止距离 l₀'
+    info_table.cell(2, 1).text = f'{l0_distance} {cost_unit}'
+    info_table.cell(3, 0).text = '分析数据量'
+    info_table.cell(3, 1).text = f'{len(results_df)} 个需求点'
+    
+    # 公式说明
+    doc.add_heading('分析方法与公式', level=1)
+    doc.add_paragraph('本分析采用标准化高斯两步移动搜索法(2SFCA)，使用以下权重函数：')
+    
+    formula_para = doc.add_paragraph()
+    formula_para.add_run('权重函数公式：\n').bold = True
+    formula_para.add_run('S(l_rn) = [e^(-1/2 × (l_rn/l_0)²) - e^(-1/2)] / [1 - e^(-1/2)]  当 l_rn < l_0\n')
+    formula_para.add_run('S(l_rn) = 0                                                   当 l_rn ≥ l_0')
+    
+    # 统计结果
+    doc.add_heading('可达性分析结果', level=1)
+    stats = results_df['AccessibilityScore'].describe()
+    stats_table = doc.add_table(rows=7, cols=2)
+    stats_table.style = 'Light Grid'
+    stats_table.cell(0, 0).text = '统计指标'
+    stats_table.cell(0, 1).text = '数值'
+    stats_table.cell(1, 0).text = '平均值'
+    stats_table.cell(1, 1).text = f"{stats['mean']:.6f}"
+    stats_table.cell(2, 0).text = '最大值'
+    stats_table.cell(2, 1).text = f"{stats['max']:.6f}"
+    stats_table.cell(3, 0).text = '最小值'
+    stats_table.cell(3, 1).text = f"{stats['min']:.6f}"
+    stats_table.cell(4, 0).text = '标准差'
+    stats_table.cell(4, 1).text = f"{stats['std']:.6f}"
+    stats_table.cell(5, 0).text = '零可达性点数'
+    stats_table.cell(5, 1).text = f"{(results_df['AccessibilityScore'] == 0).sum()}/{len(results_df)}"
+    
+    # 前10名可达性得分
+    doc.add_heading('可达性得分排名前10', level=2)
+    top_10 = results_df.nlargest(10, 'AccessibilityScore')
+    rank_table = doc.add_table(rows=11, cols=3)
+    rank_table.style = 'Light Grid'
+    rank_table.cell(0, 0).text = '排名'
+    rank_table.cell(0, 1).text = '需求点ID'
+    rank_table.cell(0, 2).text = '可达性得分'
+    
+    for i, (_, row) in enumerate(top_10.iterrows(), 1):
+        rank_table.cell(i, 0).text = str(i)
+        rank_table.cell(i, 1).text = str(row['DemandID'])
+        rank_table.cell(i, 2).text = f"{row['AccessibilityScore']:.6f}"
+    
+    # 结论
+    doc.add_heading('分析结论', level=1)
+    conclusion = f"""
+本次空间可达性分析基于标准化高斯2SFCA方法，使用截止距离{l0_distance}{cost_unit}。
+共分析了{len(results_df)}个需求点的空间可达性分布情况。
+
+主要发现：
+- 平均可达性得分为 {stats['mean']:.6f}
+- 可达性得分范围为 [{stats['min']:.6f}, {stats['max']:.6f}]
+- 空间可达性分布{"" if stats['std'] > stats['mean'] * 0.5 else "不"}均匀
+- 建议进一步分析低可达性区域的服务覆盖情况
+"""
+    doc.add_paragraph(conclusion)
+    
+    # 保存到字节流
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    doc_io.seek(0)
+    
+    return doc_io
+
+def display_formula_explanation():
+    """显示详细的公式解释"""
+    st.markdown("""
+    ## 📐 标准化高斯两步移动搜索法公式详解
+
+    ### 核心权重函数
+    """)
+    
+    # 使用LaTeX格式显示公式
+    st.latex(r"""
+    S(l_{rn}) = 
+    \begin{cases}
+    \frac{e^{-\frac{1}{2} \left( \frac{l_{rn}}{l_0} \right)^2} - e^{-\frac{1}{2}}}{1 - e^{-\frac{1}{2}}}, & \text{如果 } l_{rn} < l_0 \\
+    0, & \text{如果 } l_{rn} \geq l_0
+    \end{cases}
+    """)
+    
+    st.markdown("""
+    ### 🧮 公式参数说明
+
+    | 参数 | 描述 | 示例值 |
+    |------|------|--------|
+    | **$l_{rn}$** | 从需求点 $r$ 到供给点 $n$ 的出行成本 | 5.3分钟 / 800米 |
+    | **$l_0$** | 截止距离参数，决定空间相互作用的范围 | 15分钟 / 1000米 |
+    | **$e^{-\\frac{1}{2}}$** | 边界常数，约等于 0.6065 | 固定值 |
+    | **$1 - e^{-\\frac{1}{2}}$** | 标准化分母，约等于 0.3935 | 固定值 |
+
+    ### 📊 计算步骤详解
+
+    #### 第一步：计算每个供给点的加权需求
+    """)
+    
+    st.latex(r"P_j = \sum_{k \in \{d_{kj} \leq l_0\}} P_k \cdot S(d_{kj})")
+    
+    st.markdown("""
+    - $P_k$: 需求点 $k$ 的人口/需求量
+    - $S(d_{kj})$: 标准化高斯权重函数
+    - 只考虑距离在 $l_0$ 范围内的需求点
+
+    #### 第二步：计算每个供给点的供给比率
+    """)
+    
+    st.latex(r"R_j = \frac{S_j}{P_j}")
+    
+    st.markdown("""
+    - $S_j$: 供给点 $j$ 的服务能力
+    - $P_j$: 第一步计算的加权需求
+    - 比率表示单位需求分配到的服务资源
+
+    #### 第三步：计算每个需求点的可达性得分
+    """)
+    
+    st.latex(r"A_i = \sum_{j \in \{d_{ij} \leq l_0\}} R_j \cdot S(d_{ij})")
+    
+    st.markdown("""
+    - $R_j$: 第二步计算的供给比率
+    - $S(d_{ij})$: 标准化高斯权重函数
+    - 最终得分反映该需求点的综合可达性水平
+
+    ### 🎯 方法特点
+
+    - **单参数控制**: 只需设置截止距离 $l_0$
+    - **天然标准化**: 权重范围自动归一化到 [0, 1]
+    - **边界平滑**: 在 $l_0$ 处连续平滑衰减到0
+    - **空间衰减**: 更符合实际的空间相互作用模式
+    """)
+
 def main():
     """主应用函数"""
     
@@ -207,6 +371,10 @@ def main():
         用于评估服务设施（医院、学校等）的空间可达性分布。
         </div>
         """, unsafe_allow_html=True)
+    
+    # 公式解释页面 - 放在主内容区
+    with st.expander("📐 点击查看详细公式和算法说明", expanded=False):
+        display_formula_explanation()
     
     # 侧边栏 - 参数配置
     with st.sidebar:
@@ -321,6 +489,13 @@ def main():
                 analyzer = NormalizedGaussian2SFCA(l0_distance, cost_type)
                 results_df, df_with_weights, supply_ratios = analyzer.calculate_accessibility(df)
                 
+                # 将结果存储在session state中，防止重新运行后消失
+                st.session_state.results_df = results_df
+                st.session_state.df_with_weights = df_with_weights
+                st.session_state.supply_ratios = supply_ratios
+                st.session_state.analyzer = analyzer
+                st.session_state.analysis_complete = True
+                
                 # 显示成功信息
                 st.markdown("""
                 <div class="success-box">
@@ -329,122 +504,150 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # 结果显示
-                st.markdown('<div class="section-header">📈 分析结果</div>', unsafe_allow_html=True)
-                
-                # 统计摘要
-                col1, col2, col3, col4 = st.columns(4)
-                accessibility_scores = results_df['AccessibilityScore']
-                
-                with col1:
-                    st.metric("平均可达性", f"{accessibility_scores.mean():.6f}")
-                with col2:
-                    st.metric("最大可达性", f"{accessibility_scores.max():.6f}")
-                with col3:
-                    st.metric("最小可达性", f"{accessibility_scores.min():.6f}")
-                with col4:
-                    zero_count = (accessibility_scores == 0).sum()
-                    st.metric("零可达性点", f"{zero_count}/{len(results_df)}")
-                
-                # 结果表格
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("🏆 可达性排名")
-                    display_df = results_df.sort_values('AccessibilityScore', ascending=False)
-                    display_df['排名'] = range(1, len(display_df) + 1)
-                    st.dataframe(display_df[['排名', 'DemandID', 'Demand', 'AccessibilityScore']], 
-                               use_container_width=True)
-                
-                with col2:
-                    st.subheader("⚖️ 供给比率")
-                    supply_df = pd.DataFrame([
-                        {'供给点ID': k, '供给比率': v} 
-                        for k, v in supply_ratios.items()
-                    ])
-                    st.dataframe(supply_df, use_container_width=True)
-                
-                # 可视化分析
-                st.markdown('<div class="section-header">📊 可视化分析</div>', unsafe_allow_html=True)
-                
-                # 第一行图表
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig_decay = plot_gaussian_decay(l0_distance, cost_type)
-                    st.plotly_chart(fig_decay, use_container_width=True)
-                
-                with col2:
-                    fig_dist = plot_accessibility_distribution(results_df)
-                    st.plotly_chart(fig_dist, use_container_width=True)
-                
-                # 第二行图表
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig_od = plot_od_connections(df_with_weights, cost_type)
-                    st.plotly_chart(fig_od, use_container_width=True)
-                
-                with col2:
-                    top_results = results_df.nlargest(min(10, len(results_df)), 'AccessibilityScore')
-                    fig_rank = px.bar(
-                        top_results, x='DemandID', y='AccessibilityScore',
-                        title='🏅 Top 10 可达性得分排名', color='AccessibilityScore',
-                        color_continuous_scale='viridis'
-                    )
-                    fig_rank.update_layout(height=400, template="plotly_white")
-                    st.plotly_chart(fig_rank, use_container_width=True)
-                
-                # 技术细节
-                with st.expander("🔬 技术细节", expanded=False):
-                    st.subheader("公式常数")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**边界常数 e^(-1/2):** {analyzer._boundary_const:.6f}")
-                    with col2:
-                        st.write(f"**标准化分母:** {analyzer._denominator:.6f}")
-                    
-                    st.subheader("权重计算示例")
-                    test_data = []
-                    test_distances = [0, l0_distance*0.25, l0_distance*0.5, l0_distance*0.75, l0_distance]
-                    for dist in test_distances:
-                        weight = analyzer.gaussian_weight(dist)
-                        ratio = dist / l0_distance if l0_distance > 0 else 0
-                        test_data.append({
-                            f'{cost_type}({cost_unit})': f"{dist:.2f}",
-                            'l_rn/l_0': f"{ratio:.2f}",
-                            '权重': f"{weight:.4f}"
-                        })
-                    st.table(pd.DataFrame(test_data))
-                
-                # 下载结果
-                st.markdown('<div class="section-header">💾 下载结果</div>', unsafe_allow_html=True)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    csv_results = results_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 下载可达性结果 (CSV)",
-                        data=csv_results,
-                        file_name=f"可达性分析结果_l0_{l0_distance}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                
-                with col2:
-                    csv_od = df_with_weights.to_csv(index=False)
-                    st.download_button(
-                        label="📥 下载详细OD数据 (CSV)",
-                        data=csv_od,
-                        file_name=f"OD连接数据_l0_{l0_distance}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                    
             except Exception as e:
                 st.error(f"❌ 分析过程中出现错误: {str(e)}")
                 st.info("请检查数据格式和参数设置，或联系技术支持")
+    
+    # 显示分析结果（如果分析已完成）
+    if st.session_state.get('analysis_complete', False):
+        results_df = st.session_state.results_df
+        df_with_weights = st.session_state.df_with_weights
+        supply_ratios = st.session_state.supply_ratios
+        analyzer = st.session_state.analyzer
+        
+        # 结果显示
+        st.markdown('<div class="section-header">📈 分析结果</div>', unsafe_allow_html=True)
+        
+        # 统计摘要
+        col1, col2, col3, col4 = st.columns(4)
+        accessibility_scores = results_df['AccessibilityScore']
+        
+        with col1:
+            st.metric("平均可达性", f"{accessibility_scores.mean():.6f}")
+        with col2:
+            st.metric("最大可达性", f"{accessibility_scores.max():.6f}")
+        with col3:
+            st.metric("最小可达性", f"{accessibility_scores.min():.6f}")
+        with col4:
+            zero_count = (accessibility_scores == 0).sum()
+            st.metric("零可达性点", f"{zero_count}/{len(results_df)}")
+        
+        # 结果表格
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("🏆 可达性排名")
+            display_df = results_df.sort_values('AccessibilityScore', ascending=False)
+            display_df['排名'] = range(1, len(display_df) + 1)
+            st.dataframe(display_df[['排名', 'DemandID', 'Demand', 'AccessibilityScore']], 
+                       use_container_width=True)
+        
+        with col2:
+            st.subheader("⚖️ 供给比率")
+            supply_df = pd.DataFrame([
+                {'供给点ID': k, '供给比率': v} 
+                for k, v in supply_ratios.items()
+            ])
+            st.dataframe(supply_df, use_container_width=True)
+        
+        # 可视化分析
+        st.markdown('<div class="section-header">📊 可视化分析</div>', unsafe_allow_html=True)
+        
+        # 第一行图表
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_decay = plot_gaussian_decay(l0_distance, cost_type)
+            st.plotly_chart(fig_decay, use_container_width=True)
+        
+        with col2:
+            fig_dist = plot_accessibility_distribution(results_df)
+            st.plotly_chart(fig_dist, use_container_width=True)
+        
+        # 第二行图表
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fig_od = plot_od_connections(df_with_weights, cost_type)
+            st.plotly_chart(fig_od, use_container_width=True)
+        
+        with col2:
+            top_results = results_df.nlargest(min(10, len(results_df)), 'AccessibilityScore')
+            fig_rank = px.bar(
+                top_results, x='DemandID', y='AccessibilityScore',
+                title='🏅 Top 10 可达性得分排名', color='AccessibilityScore',
+                color_continuous_scale='viridis'
+            )
+            fig_rank.update_layout(height=400, template="plotly_white")
+            st.plotly_chart(fig_rank, use_container_width=True)
+        
+        # 技术细节
+        with st.expander("🔬 技术细节", expanded=False):
+            st.subheader("公式常数")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**边界常数 e^(-1/2):** {analyzer._boundary_const:.6f}")
+            with col2:
+                st.write(f"**标准化分母:** {analyzer._denominator:.6f}")
+            
+            st.subheader("权重计算示例")
+            test_data = []
+            test_distances = [0, l0_distance*0.25, l0_distance*0.5, l0_distance*0.75, l0_distance]
+            for dist in test_distances:
+                weight = analyzer.gaussian_weight(dist)
+                ratio = dist / l0_distance if l0_distance > 0 else 0
+                test_data.append({
+                    f'{cost_type}({cost_unit})': f"{dist:.2f}",
+                    'l_rn/l_0': f"{ratio:.2f}",
+                    '权重': f"{weight:.4f}"
+                })
+            st.table(pd.DataFrame(test_data))
+        
+        # 下载结果 - 修复下载按钮消失问题
+        st.markdown('<div class="section-header">💾 下载结果</div>', unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # 可达性结果下载
+            csv_results = results_df.to_csv(index=False)
+            st.download_button(
+                label="📥 下载可达性结果 (CSV)",
+                data=csv_results,
+                file_name=f"可达性分析结果_l0_{l0_distance}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_accessibility"  # 添加唯一key
+            )
+        
+        with col2:
+            # 详细OD权重下载
+            csv_od = df_with_weights.to_csv(index=False)
+            st.download_button(
+                label="📥 下载详细OD数据 (CSV)",
+                data=csv_od,
+                file_name=f"OD连接数据_l0_{l0_distance}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_od"  # 添加唯一key
+            )
+        
+        with col3:
+            # Word报告下载
+            try:
+                doc_io = create_word_report(results_df, df_with_weights, supply_ratios, 
+                                          analyzer, cost_type, cost_unit, l0_distance)
+                st.download_button(
+                    label="📄 下载分析报告 (Word)",
+                    data=doc_io.getvalue(),
+                    file_name=f"可达性分析报告_l0_{l0_distance}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key="download_report"  # 添加唯一key
+                )
+            except Exception as e:
+                st.error(f"生成Word报告时出错: {str(e)}")
+                st.info("请确保已安装 python-docx 库")
     
     # 使用说明
     with st.expander("📖 使用指南", expanded=False):
@@ -491,6 +694,10 @@ def main():
         **Q: 如何选择合适的 l₀ 值？**
         A: 根据实际出行行为和研究目的选择，可参考预设值或进行敏感性分析
         """)
+
+# 初始化session state
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
 
 if __name__ == "__main__":
     main()
