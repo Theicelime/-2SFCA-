@@ -231,10 +231,27 @@ def plot_accessibility_boxplot(results_df):
 
 def plot_accessibility_vs_demand(results_df):
     """绘制可达性vs需求散点图"""
+    # 移除对statsmodels的依赖，使用简单的线性趋势线
     fig = px.scatter(
         results_df, x='Demand', y='AccessibilityScore',
         title='需求量与可达性关系',
-        trendline="lowess", color='AccessibilityScore',
+        trendline="ols",  # 使用普通的线性回归
+        color='AccessibilityScore',
+        color_continuous_scale='viridis'
+    )
+    fig.update_layout(
+        xaxis_title='需求量', yaxis_title='可达性得分', height=400,
+        template="plotly_white"
+    )
+    return fig
+
+def plot_accessibility_heatmap(results_df, df_with_weights):
+    """绘制可达性热力图（替代TOP10排名）"""
+    # 创建需求点-可达性得分的分布热力图
+    fig = px.density_heatmap(
+        results_df, x='Demand', y='AccessibilityScore',
+        title='需求量与可达性关系热力图',
+        nbinsx=20, nbinsy=20,
         color_continuous_scale='viridis'
     )
     fig.update_layout(
@@ -244,7 +261,7 @@ def plot_accessibility_vs_demand(results_df):
     return fig
 
 def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cost_type, cost_unit, l0_distance, 
-                      fig_decay, fig_dist, fig_od, fig_box, fig_scatter):
+                      fig_decay, fig_dist, fig_od, fig_box, fig_scatter, fig_heatmap):
     """创建Word格式分析报告"""
     doc = Document()
     
@@ -390,6 +407,12 @@ def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cos
     scatter_img = fig_to_image(fig_scatter)
     doc.add_picture(scatter_img, width=Inches(6))
     doc.add_paragraph('图5: 需求量与可达性得分关系散点图')
+    
+    # 插入图表 - 热力图
+    doc.add_heading('需求量与可达性关系热力图', level=3)
+    heatmap_img = fig_to_image(fig_heatmap)
+    doc.add_picture(heatmap_img, width=Inches(6))
+    doc.add_paragraph('图6: 需求量与可达性得分关系热力图')
     
     # 前10名可达性得分
     doc.add_heading('3.3 可达性得分排名前10', level=2)
@@ -660,6 +683,7 @@ def main():
                 fig_od = plot_od_connections(df_with_weights, cost_type)
                 fig_box = plot_accessibility_boxplot(results_df)
                 fig_scatter = plot_accessibility_vs_demand(results_df)
+                fig_heatmap = plot_accessibility_heatmap(results_df, df_with_weights)
                 
                 # 将结果存储在session state中，防止重新运行后消失
                 st.session_state.results_df = results_df
@@ -671,6 +695,7 @@ def main():
                 st.session_state.fig_od = fig_od
                 st.session_state.fig_box = fig_box
                 st.session_state.fig_scatter = fig_scatter
+                st.session_state.fig_heatmap = fig_heatmap
                 st.session_state.analysis_complete = True
                 st.session_state.cost_type = cost_type
                 st.session_state.cost_unit = cost_unit
@@ -699,6 +724,7 @@ def main():
         fig_od = st.session_state.fig_od
         fig_box = st.session_state.fig_box
         fig_scatter = st.session_state.fig_scatter
+        fig_heatmap = st.session_state.fig_heatmap
         cost_type = st.session_state.cost_type
         cost_unit = st.session_state.cost_unit
         l0_distance = st.session_state.l0_distance
@@ -844,28 +870,55 @@ def main():
                 )
         
         # 第三行图表
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        col1, col2 = st.columns(2)
         
-        # 图表下载按钮
-        col3a, col3b = st.columns(2)
-        with col3a:
-            png_scatter = pio.to_image(fig_scatter, format='png', scale=2)
-            st.download_button(
-                label="📥 下载PNG",
-                data=png_scatter,
-                file_name="需求量与可达性关系.png",
-                mime="image/png",
-                use_container_width=True
-            )
-        with col3b:
-            pdf_scatter = pio.to_image(fig_scatter, format='pdf')
-            st.download_button(
-                label="📥 下载PDF",
-                data=pdf_scatter,
-                file_name="需求量与可达性关系.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+        with col1:
+            st.plotly_chart(fig_scatter, use_container_width=True)
+            
+            # 图表下载按钮
+            col1a, col1b = st.columns(2)
+            with col1a:
+                png_scatter = pio.to_image(fig_scatter, format='png', scale=2)
+                st.download_button(
+                    label="📥 下载PNG",
+                    data=png_scatter,
+                    file_name="需求量与可达性关系.png",
+                    mime="image/png",
+                    use_container_width=True
+                )
+            with col1b:
+                pdf_scatter = pio.to_image(fig_scatter, format='pdf')
+                st.download_button(
+                    label="📥 下载PDF",
+                    data=pdf_scatter,
+                    file_name="需求量与可达性关系.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        
+        with col2:
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+            
+            # 图表下载按钮
+            col2a, col2b = st.columns(2)
+            with col2a:
+                png_heatmap = pio.to_image(fig_heatmap, format='png', scale=2)
+                st.download_button(
+                    label="📥 下载PNG",
+                    data=png_heatmap,
+                    file_name="需求量与可达性热力图.png",
+                    mime="image/png",
+                    use_container_width=True
+                )
+            with col2b:
+                pdf_heatmap = pio.to_image(fig_heatmap, format='pdf')
+                st.download_button(
+                    label="📥 下载PDF",
+                    data=pdf_heatmap,
+                    file_name="需求量与可达性热力图.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
         
         # 技术细节
         with st.expander("🔬 技术细节", expanded=False):
@@ -926,7 +979,7 @@ def main():
             try:
                 doc_io = create_word_report(results_df, df_with_weights, supply_ratios, 
                                           analyzer, cost_type, cost_unit, l0_distance,
-                                          fig_decay, fig_dist, fig_od, fig_box, fig_scatter)
+                                          fig_decay, fig_dist, fig_od, fig_box, fig_scatter, fig_heatmap)
                 st.download_button(
                     label="📄 下载完整分析报告 (Word)",
                     data=doc_io.getvalue(),
