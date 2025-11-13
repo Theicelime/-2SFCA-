@@ -230,22 +230,40 @@ def plot_accessibility_boxplot(results_df):
     return fig
 
 def plot_accessibility_vs_demand(results_df):
-    """绘制可达性vs需求散点图"""
-    # 移除对statsmodels的依赖，使用简单的线性趋势线
+    """绘制可达性vs需求散点图 - 完全移除statsmodels依赖"""
     fig = px.scatter(
         results_df, x='Demand', y='AccessibilityScore',
         title='需求量与可达性关系',
-        trendline="ols",  # 使用普通的线性回归
         color='AccessibilityScore',
         color_continuous_scale='viridis'
     )
+    
+    # 手动添加简单的趋势线（不使用statsmodels）
+    if len(results_df) > 1:
+        # 使用numpy计算线性回归
+        x = results_df['Demand'].values
+        y = results_df['AccessibilityScore'].values
+        
+        # 计算线性回归参数
+        A = np.vstack([x, np.ones(len(x))]).T
+        m, c = np.linalg.lstsq(A, y, rcond=None)[0]
+        
+        # 添加趋势线
+        x_line = np.linspace(x.min(), x.max(), 100)
+        y_line = m * x_line + c
+        
+        fig.add_trace(go.Scatter(
+            x=x_line, y=y_line, mode='lines', 
+            name='线性趋势', line=dict(color='red', dash='dash')
+        ))
+    
     fig.update_layout(
         xaxis_title='需求量', yaxis_title='可达性得分', height=400,
         template="plotly_white"
     )
     return fig
 
-def plot_accessibility_heatmap(results_df, df_with_weights):
+def plot_accessibility_heatmap(results_df):
     """绘制可达性热力图（替代TOP10排名）"""
     # 创建需求点-可达性得分的分布热力图
     fig = px.density_heatmap(
@@ -260,9 +278,27 @@ def plot_accessibility_heatmap(results_df, df_with_weights):
     )
     return fig
 
-def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cost_type, cost_unit, l0_distance, 
-                      fig_decay, fig_dist, fig_od, fig_box, fig_scatter, fig_heatmap):
-    """创建Word格式分析报告"""
+def plot_accessibility_ranking(results_df):
+    """绘制可达性排名图 - 替代TOP10柱状图"""
+    # 选择前15个点进行展示，避免图表过于拥挤
+    display_count = min(15, len(results_df))
+    top_results = results_df.nlargest(display_count, 'AccessibilityScore')
+    
+    fig = px.scatter(
+        top_results, x='DemandID', y='AccessibilityScore',
+        size='Demand', color='AccessibilityScore',
+        title=f'前{display_count}名可达性得分排名',
+        hover_data=['Demand'],
+        color_continuous_scale='viridis'
+    )
+    fig.update_layout(
+        xaxis_title='需求点ID', yaxis_title='可达性得分', height=400,
+        template="plotly_white"
+    )
+    return fig
+
+def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cost_type, cost_unit, l0_distance):
+    """创建Word格式分析报告 - 简化版本，不依赖外部图表"""
     doc = Document()
     
     # 设置文档样式
@@ -374,48 +410,8 @@ def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cos
     stats_table.cell(7, 0).text = '75%分位数'
     stats_table.cell(7, 1).text = f"{stats['75%']:.6f}"
     
-    # 可达性分布
-    doc.add_heading('3.2 可达性分布可视化', level=2)
-    doc.add_paragraph('以下图表展示了本次可达性分析的详细结果：')
-    
-    # 插入图表 - 高斯衰减函数
-    doc.add_heading('高斯衰减函数', level=3)
-    decay_img = fig_to_image(fig_decay)
-    doc.add_picture(decay_img, width=Inches(6))
-    doc.add_paragraph('图1: 标准化高斯衰减函数曲线，显示权重随距离增加而衰减的模式')
-    
-    # 插入图表 - 可达性分布直方图
-    doc.add_heading('可达性得分分布', level=3)
-    dist_img = fig_to_image(fig_dist)
-    doc.add_picture(dist_img, width=Inches(6))
-    doc.add_paragraph('图2: 可达性得分频率分布直方图')
-    
-    # 插入图表 - OD连接权重分布
-    doc.add_heading('OD连接权重分布', level=3)
-    od_img = fig_to_image(fig_od)
-    doc.add_picture(od_img, width=Inches(6))
-    doc.add_paragraph('图3: OD连接权重与出行成本关系散点图')
-    
-    # 插入图表 - 箱线图
-    doc.add_heading('可达性得分分布箱线图', level=3)
-    box_img = fig_to_image(fig_box)
-    doc.add_picture(box_img, width=Inches(6))
-    doc.add_paragraph('图4: 可达性得分的统计分布箱线图')
-    
-    # 插入图表 - 散点图
-    doc.add_heading('需求量与可达性关系', level=3)
-    scatter_img = fig_to_image(fig_scatter)
-    doc.add_picture(scatter_img, width=Inches(6))
-    doc.add_paragraph('图5: 需求量与可达性得分关系散点图')
-    
-    # 插入图表 - 热力图
-    doc.add_heading('需求量与可达性关系热力图', level=3)
-    heatmap_img = fig_to_image(fig_heatmap)
-    doc.add_picture(heatmap_img, width=Inches(6))
-    doc.add_paragraph('图6: 需求量与可达性得分关系热力图')
-    
     # 前10名可达性得分
-    doc.add_heading('3.3 可达性得分排名前10', level=2)
+    doc.add_heading('3.2 可达性得分排名前10', level=2)
     top_10 = results_df.nlargest(10, 'AccessibilityScore')
     rank_table = doc.add_table(rows=11, cols=4)
     rank_table.style = 'Light Grid'
@@ -431,7 +427,7 @@ def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cos
         rank_table.cell(i, 3).text = f"{row['AccessibilityScore']:.6f}"
     
     # 供给比率
-    doc.add_heading('3.4 供给点服务比率', level=2)
+    doc.add_heading('3.3 供给点服务比率', level=2)
     supply_table = doc.add_table(rows=len(supply_ratios)+1, cols=2)
     supply_table.style = 'Light Grid'
     supply_table.cell(0, 0).text = '供给点ID'
@@ -440,6 +436,22 @@ def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cos
     for i, (supply_id, ratio) in enumerate(supply_ratios.items(), 1):
         supply_table.cell(i, 0).text = str(supply_id)
         supply_table.cell(i, 1).text = f"{ratio:.6f}"
+    
+    # 权重计算示例
+    doc.add_heading('3.4 权重计算示例', level=2)
+    weight_table = doc.add_table(rows=6, cols=3)
+    weight_table.style = 'Light Grid'
+    weight_table.cell(0, 0).text = f'{cost_type}({cost_unit})'
+    weight_table.cell(0, 1).text = 'l_rn/l_0'
+    weight_table.cell(0, 2).text = '权重'
+    
+    test_distances = [0, l0_distance*0.25, l0_distance*0.5, l0_distance*0.75, l0_distance]
+    for i, dist in enumerate(test_distances, 1):
+        weight = analyzer.gaussian_weight(dist)
+        ratio = dist / l0_distance if l0_distance > 0 else 0
+        weight_table.cell(i, 0).text = f"{dist:.2f}"
+        weight_table.cell(i, 1).text = f"{ratio:.2f}"
+        weight_table.cell(i, 2).text = f"{weight:.4f}"
     
     # 分析结论
     doc.add_heading('3.5 分析结论与建议', level=2)
@@ -467,11 +479,6 @@ def create_word_report(results_df, df_with_weights, supply_ratios, analyzer, cos
     doc_io.seek(0)
     
     return doc_io
-
-def fig_to_image(fig):
-    """将Plotly图形转换为图片字节流"""
-    img_bytes = pio.to_image(fig, format='png', width=800, height=400, scale=2)
-    return io.BytesIO(img_bytes)
 
 def display_formula_explanation():
     """显示详细的公式解释"""
@@ -677,13 +684,14 @@ def main():
                 analyzer = NormalizedGaussian2SFCA(l0_distance, cost_type)
                 results_df, df_with_weights, supply_ratios = analyzer.calculate_accessibility(df)
                 
-                # 生成图表
+                # 生成图表 - 完全不使用statsmodels
                 fig_decay = plot_gaussian_decay(l0_distance, cost_type)
                 fig_dist = plot_accessibility_distribution(results_df)
                 fig_od = plot_od_connections(df_with_weights, cost_type)
                 fig_box = plot_accessibility_boxplot(results_df)
                 fig_scatter = plot_accessibility_vs_demand(results_df)
-                fig_heatmap = plot_accessibility_heatmap(results_df, df_with_weights)
+                fig_heatmap = plot_accessibility_heatmap(results_df)
+                fig_ranking = plot_accessibility_ranking(results_df)
                 
                 # 将结果存储在session state中，防止重新运行后消失
                 st.session_state.results_df = results_df
@@ -696,6 +704,7 @@ def main():
                 st.session_state.fig_box = fig_box
                 st.session_state.fig_scatter = fig_scatter
                 st.session_state.fig_heatmap = fig_heatmap
+                st.session_state.fig_ranking = fig_ranking
                 st.session_state.analysis_complete = True
                 st.session_state.cost_type = cost_type
                 st.session_state.cost_unit = cost_unit
@@ -711,7 +720,7 @@ def main():
                 
             except Exception as e:
                 st.error(f"❌ 分析过程中出现错误: {str(e)}")
-                st.info("请检查数据格式和参数设置，或联系技术支持")
+                st.info("请检查数据格式和参数设置")
     
     # 显示分析结果（如果分析已完成）
     if st.session_state.get('analysis_complete', False):
@@ -725,6 +734,7 @@ def main():
         fig_box = st.session_state.fig_box
         fig_scatter = st.session_state.fig_scatter
         fig_heatmap = st.session_state.fig_heatmap
+        fig_ranking = st.session_state.fig_ranking
         cost_type = st.session_state.cost_type
         cost_unit = st.session_state.cost_unit
         l0_distance = st.session_state.l0_distance
@@ -920,6 +930,30 @@ def main():
                     use_container_width=True
                 )
         
+        # 第四行图表 - 排名图
+        st.plotly_chart(fig_ranking, use_container_width=True)
+        
+        # 图表下载按钮
+        col4a, col4b = st.columns(2)
+        with col4a:
+            png_ranking = pio.to_image(fig_ranking, format='png', scale=2)
+            st.download_button(
+                label="📥 下载PNG",
+                data=png_ranking,
+                file_name="可达性排名图.png",
+                mime="image/png",
+                use_container_width=True
+            )
+        with col4b:
+            pdf_ranking = pio.to_image(fig_ranking, format='pdf')
+            st.download_button(
+                label="📥 下载PDF",
+                data=pdf_ranking,
+                file_name="可达性排名图.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        
         # 技术细节
         with st.expander("🔬 技术细节", expanded=False):
             st.subheader("公式常数")
@@ -978,8 +1012,7 @@ def main():
             # Word报告下载
             try:
                 doc_io = create_word_report(results_df, df_with_weights, supply_ratios, 
-                                          analyzer, cost_type, cost_unit, l0_distance,
-                                          fig_decay, fig_dist, fig_od, fig_box, fig_scatter, fig_heatmap)
+                                          analyzer, cost_type, cost_unit, l0_distance)
                 st.download_button(
                     label="📄 下载完整分析报告 (Word)",
                     data=doc_io.getvalue(),
