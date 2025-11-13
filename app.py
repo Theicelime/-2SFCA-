@@ -845,6 +845,80 @@ def main():
                 st.info("请确保已安装 python-docx 库")
         
         st.markdown("</div>", unsafe_allow_html=True)
+        # 合并多个可达性结果（新增功能）
+        st.markdown("---")
+        st.markdown('<div class="section-header">🔗 合并多个可达性结果</div>', unsafe_allow_html=True)
+        
+        st.markdown("""
+        **功能说明**: 上传多个不同等级设施的可达性结果CSV文件，计算综合可达性得分。
+        每个文件应包含: DemandID, Demand, AccessibilityScore 三列。
+        """)
+        
+        # 多文件上传
+        merged_files = st.file_uploader(
+            "上传多个可达性结果CSV文件",
+            type=['csv'],
+            accept_multiple_files=True,
+            help="选择多个CSV文件进行合并计算"
+        )
+        
+        if merged_files and len(merged_files) >= 2:
+            try:
+                # 读取并合并所有文件
+                merged_dfs = []
+                for i, file in enumerate(merged_files):
+                    df_temp = pd.read_csv(file)
+                    # 确保包含必要列
+                    if all(col in df_temp.columns for col in ['DemandID', 'AccessibilityScore']):
+                        # 重命名得分列以区分来源
+                        df_temp = df_temp.rename(columns={'AccessibilityScore': f'Score_{i+1}'})
+                        merged_dfs.append(df_temp[['DemandID', f'Score_{i+1}']])
+                
+                if len(merged_dfs) >= 2:
+                    # 合并所有数据框
+                    merged_result = merged_dfs[0]
+                    for df in merged_dfs[1:]:
+                        merged_result = pd.merge(merged_result, df, on='DemandID', how='outer')
+                    
+                    # 计算综合得分（简单求和）
+                    score_columns = [col for col in merged_result.columns if col.startswith('Score_')]
+                    merged_result['综合可达性得分'] = merged_result[score_columns].sum(axis=1)
+                    
+                    # 如果有Demand列，也合并（取第一个文件的Demand）
+                    if 'Demand' in merged_dfs[0].columns:
+                        demand_df = merged_dfs[0][['DemandID', 'Demand']]
+                        merged_result = pd.merge(merged_result, demand_df, on='DemandID', how='left')
+                    
+                    # 显示合并结果
+                    st.subheader("合并结果")
+                    st.dataframe(merged_result, use_container_width=True)
+                    
+                    # 统计信息
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("平均综合得分", f"{merged_result['综合可达性得分'].mean():.6f}")
+                    with col2:
+                        st.metric("最大综合得分", f"{merged_result['综合可达性得分'].max():.6f}")
+                    with col3:
+                        st.metric("最小综合得分", f"{merged_result['综合可达性得分'].min():.6f}")
+                    with col4:
+                        st.metric("合并文件数", len(merged_dfs))
+                    
+                    # 下载合并结果
+                    csv_merged = merged_result.to_csv(index=False)
+                    st.download_button(
+                        label="📥 下载合并结果 (CSV)",
+                        data=csv_merged,
+                        file_name="综合可达性得分.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        key="download_merged"
+                    )
+                    
+            except Exception as e:
+                st.error(f"合并过程中出现错误: {str(e)}")
+        elif merged_files and len(merged_files) == 1:
+            st.info("请至少上传2个文件进行合并")
     
     # 使用说明
     with st.expander("📖 使用指南", expanded=False):
